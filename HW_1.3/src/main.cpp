@@ -1,16 +1,16 @@
 #include <Arduino.h>
 
 // Assign pins for the LEDs
-const char RED_LED = 12;
-const char BLUE_LED = 14;
-const char GREEN_LED = 10;
+const unsigned char RED_LED = 12;
+const unsigned char BLUE_LED = 14;
+const unsigned char GREEN_LED = 10;
 
 // Speed settings
-const char BLINK_DELAY = 80;   // Duration of a single flash
-const char PAUSE_BETWEEN = 50; // Pause between double flashes
-const char SWITCH_DELAY = 150; // Pause when changing colors
+const unsigned char BLINK_DELAY = 80;   // Duration of a single flash
+const unsigned char PAUSE_BETWEEN = 50; // Pause between double flashes
+const unsigned char SWITCH_DELAY = 150; // Pause when changing colors
 
-void blink_LED(char pin_led, char blink_delay, char pause_between);
+void blink_LED(unsigned char pin_led, unsigned char blink_delay, unsigned char pause_between);
 
 void setup()
 {
@@ -33,7 +33,7 @@ void loop()
   delay(SWITCH_DELAY); // Pause before starting a new cycle
 }
 
-void blink_LED(char pin_led, char blink_delay, char pause_between)
+void blink_LED(unsigned char pin_led, unsigned char blink_delay, unsigned char pause_between)
 {
   digitalWrite(pin_led, HIGH);
   delay(blink_delay);
