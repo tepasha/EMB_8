@@ -1,0 +1,81 @@
+#include <Arduino.h>
+
+// ── Пін-аут
+#define PIN_POT 4       // потенціометр → ADC
+#define PIN_PWM_SW 5    // програмний PWM → двигун (через драйвер)
+#define PIN_PWM_UART 43 // TX0 — UART-PWM
+
+#define PWM_PERIOD_US 1000 // період PWM = 1 мс → 1 кГц
+
+// ── Стан програмного PW
+uint32_t pwmCycleStart = 0;
+uint8_t dutyCycle = 0; // 0–100 %
+
+// ── UART2 для PWM-сигналу
+void setup()
+{
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, -1, PIN_PWM_UART);
+
+  pinMode(PIN_PWM_SW, OUTPUT);
+  digitalWrite(PIN_PWM_SW, LOW);
+
+  pwmCycleStart = micros();
+
+  Serial.println("=== Програмний PWM ===");
+  Serial.println("ADC | Duty% | Period(мкс) | High(мкс)");
+}
+
+// ── Зчитати потенціометр і порахувати duty
+void updateDuty()
+{
+  static uint32_t lastRead = 0;
+  if (millis() - lastRead < 20)
+    return; // читаємо ADC кожні 20 мс
+  lastRead = millis();
+
+  uint16_t adc = analogRead(PIN_POT); // 0–4095 (12 біт)
+  dutyCycle = map(adc, 0, 4095, 0, 100);
+
+  // ── UART-PWM
+  uint8_t hi = dutyCycle / 10; // масштабуємо щоб не флудити порт
+  uint8_t lo = (100 - dutyCycle) / 10;
+  for (uint8_t i = 0; i < hi; i++)
+    Serial2.write(0xFF);
+  for (uint8_t i = 0; i < lo; i++)
+    Serial2.write(0x00);
+
+  // Лог у Serial Monitor
+  uint32_t highUs = (PWM_PERIOD_US * dutyCycle) / 100;
+  Serial.printf("%-5u %-7u %-13u %u\n", adc, dutyCycle, PWM_PERIOD_US, highUs);
+}
+
+// Програмний PWM через millis/micros
+void runSoftPWM()
+{
+  uint32_t now = micros();
+  uint32_t elapsed = now - pwmCycleStart;
+
+  if (elapsed >= PWM_PERIOD_US)
+  {
+    pwmCycleStart = now;
+    if (dutyCycle > 0)
+      digitalWrite(PIN_PWM_SW, HIGH);
+    else
+      digitalWrite(PIN_PWM_SW, LOW);
+  }
+  else
+  {
+    uint32_t highTime = (PWM_PERIOD_US * dutyCycle) / 100;
+    if (elapsed >= highTime)
+    {
+      digitalWrite(PIN_PWM_SW, LOW);
+    }
+  }
+}
+
+void loop()
+{
+  runSoftPWM();
+  updateDuty();
+}
