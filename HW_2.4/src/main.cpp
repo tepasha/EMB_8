@@ -7,7 +7,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
-// ── Конфіг ────────────────────────────────────────────────────────────────────
+// Конфіг
 #define BUTTON_PIN   GPIO_NUM_0
 #define LED_PIN      GPIO_NUM_2
 #define ACTIVE_TASK  1           // змінити на 1,2,3,4,5
