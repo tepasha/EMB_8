@@ -36,7 +36,6 @@ void hardware_init() {
         .name = "long_press_timer"
     };
     esp_timer_create(&long_press_timer_args, &long_press_timer);
-
     button_handler.state = IDLE;
     button_handler.debounce_timer = debounce_timer;
     button_handler.long_press_timer = long_press_timer;
