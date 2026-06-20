@@ -22,16 +22,16 @@ static const char *TAG = "ADC";
 static void print_header(void) {
   printf("\n");
   printf("%-6s  %-14s  %-12s  %-10s  %-8s  %-10s\n",
-         "RAW", "U_manual(mV)", "U_cali(mV)", "Error(%)",
+         "RAW", "U_cali(mV)", "Error(%)",
          "Atten", "Vref(mV)");
   printf("%-6s  %-14s  %-12s  %-10s  %-8s  %-10s\n",
-         "------", "--------------", "------------", "----------",
+         "------", "------------", "----------",
          "--------", "----------");
 }
 
-static void print_row(int raw, float u_manual, int u_cali, float error) {
+static void print_row(int raw, int u_cali, float error) {
   printf("%-6d  %-14.1f  %-12d  %-10.2f  %-8s  %-10d\n",
-         raw, u_manual, u_cali, error, "12 dB", ADC_REF_MV);
+         raw, u_cali, error, "12 dB", ADC_REF_MV);
 }
 
 void app_main(void) {
@@ -81,10 +81,6 @@ void app_main(void) {
   }
 #endif
 
-  if (!cali_ok) {
-    ESP_LOGW(TAG, "Calibration not available — U_cali = U_manual");
-  }
-
   // Інформація про конфігурацію 
   printf("\n=== ADC Configuration ===\n");
   printf("Channel   : ADC1 CH%d (GPIO%d)\n", ADC_CHANNEL, ADC_CHANNEL + 1);
@@ -105,25 +101,14 @@ void app_main(void) {
     int raw = 0;
     ESP_ERROR_CHECK(adc_oneshot_read(adc_handle, ADC_CHANNEL, &raw));
 
-    // Ручна формула: U = RAW × Vref / (2^bits - 1)
-    float u_manual = (float)raw * ADC_REF_MV / 4095.0f;
-
     // Каліброване значення
-    int u_cali = (int)u_manual;   // fallback
     if (cali_ok) {
       adc_cali_raw_to_voltage(cali_handle, raw, &u_cali);
     }
 
-    // Похибка
-    float error = 0.0f;
-    if (u_cali > 0) {
-      error = ((u_manual - u_cali) / (float)u_cali) * 100.0f;
-      if (error < 0) error = -error;
-    }
-
     // Виводимо лише якщо RAW змінився (унікальні точки)
     if (raw != prev_raw) {
-      print_row(raw, u_manual, u_cali, error);
+      print_row(raw, u_cali, error);
       sum_error += error;
       valid_rows++;
       prev_raw = raw;
