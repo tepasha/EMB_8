@@ -1,204 +1,149 @@
 #include <stdio.h>
 #include <string.h>
-#include <stdbool.h>
-
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "esp_log.h"
-#include "esp_err.h"
-#include "driver/i2c_master.h"
-#include "driver/gpio.h"
 
-// lib/ components — resolved via EXTRA_COMPONENT_DIRS → lib/
-#include "rtc_ds1307.h"
+#include "i2c_bus.h"
+#include "ssd1306.h"
+#include "ds1307.h"
 #include "ds18b20.h"
-#include "display.h"
 
-// Pin definitions
-#define PIN_SDA       8
-#define PIN_SCL       9
-#define PIN_ONE_WIRE  3
+static const char *TAG = "CLOCK_APP";
 
-// I2C bus + DS1307 device handles 
+#define ENABLE_DS18B20 1
 
-// Forward declarations
-static uint8_t calc_dow(int y, int m, int d);
-static void init_i2c(void);
-static void init_rtc(void);
-static void task_temperature(void *arg);
-static void task_clock(void *arg);
-void app_main(void);
+static i2c_master_bus_handle_t i2c_bus;
+static i2c_master_dev_handle_t ds1307_dev;
+static ssd1306_t display;
 
-static i2c_master_bus_handle_t  s_i2c_bus;
-static i2c_master_dev_handle_t  s_rtc_dev;
+static const char *weekday_names[] = {
+    "", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
 
-//Shared temperature (float, mutex-protected)
-static float             s_temp_c    = -127.0f;
-static SemaphoreHandle_t s_temp_mutex;
-
-static const char *TAG = "clock";
-
-//  Helper: day-of-week via Zeller's congruence                        
-//  Returns 1=Sun … 7=Sat  (DS1307 register convention)
-static uint8_t calc_dow(int y, int m, int d)
+// ---------- Ініціалізація периферії ----------
+static esp_err_t app_hw_init(void)
 {
-    if (m < 3) { m += 12; y--; }
-    int k = y % 100, j = y / 100;
-    int h = (d + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
-    /* h: 0=Sat, 1=Sun, 2=Mon … 6=Fri  →  convert to 1=Sun … 7=Sat */
-    return (uint8_t)((h + 6) % 7 + 1);
-}
+    esp_err_t err = i2c_bus_init(&i2c_bus);
+    if (err != ESP_OK) return err;
 
-//  I2C bus init (ESP-IDF v5 new master driver)
-static void init_i2c(void)
-{
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port            = I2C_NUM_0,
-        .sda_io_num          = PIN_SDA,
-        .scl_io_num          = PIN_SCL,
-        .clk_source          = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt   = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &s_i2c_bus));
-
-    i2c_device_config_t ds1307_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = DS1307_ADDR,
-        .scl_speed_hz    = 100000,
-    };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &ds1307_cfg, &s_rtc_dev));
-
-    ESP_LOGI(TAG, "I2C ready  SDA=GPIO%d  SCL=GPIO%d", PIN_SDA, PIN_SCL);
-}
-
-//  RTC init — set compile-time if CH bit is set (lost power / new)
-static void init_rtc(void)
-{
-    if (ds1307_lost_power(s_rtc_dev)) {
-        ESP_LOGW(TAG, "DS1307 CH bit set — programming compile-time");
-
-        /* Parse __DATE__ = "Mmm DD YYYY"  __TIME__ = "HH:MM:SS" */
-        static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-        char mon_str[4];
-        int  day_n, year_n, hr, mn, sc;
-        sscanf(__DATE__, "%3s %d %d", mon_str, &day_n, &year_n);
-        sscanf(__TIME__, "%d:%d:%d",  &hr, &mn, &sc);
-
-        int month_n = 1;
-        for (int i = 0; i < 12; i++) {
-            if (strncmp(months + i * 3, mon_str, 3) == 0) {
-                month_n = i + 1;
-                break;
-            }
-        }
-
-        ds1307_time_t t = {
-            .second = (uint8_t)sc,
-            .minute = (uint8_t)mn,
-            .hour   = (uint8_t)hr,
-            .dow    = calc_dow(year_n, month_n, day_n),
-            .day    = (uint8_t)day_n,
-            .month  = (uint8_t)month_n,
-            .year   = (uint16_t)year_n,
-        };
-        ESP_ERROR_CHECK(ds1307_write(s_rtc_dev, &t));
+    err = ssd1306_init(&display, i2c_bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SSD1306 init failed");
+        return err;
     }
-    ESP_LOGI(TAG, "DS1307 ready");
-}
 
-//  Task — temperature (async DS18B20, every 2 s)
-static void task_temperature(void *arg)
-{
-    const gpio_num_t ow_pin = (gpio_num_t)PIN_ONE_WIRE;
-
-    gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << ow_pin,
-        .mode         = GPIO_MODE_INPUT_OUTPUT_OD,
-        .pull_up_en   = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
-
-    while (true) {
-        // Step 1 — start 12-bit conversion (~750 ms)
-        bool present = ds18b20_start_conversion(ow_pin);
-        if (!present) {
-            ESP_LOGW(TAG, "DS18B20 not found on GPIO%d", ow_pin);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
-        }
-
-        // Step 2 — wait for conversion to complete (≥750 ms)
-        vTaskDelay(pdMS_TO_TICKS(800));
-
-        // Step 3 — read scratchpad
-        float temp = ds18b20_read_temp(ow_pin);
-        if (xSemaphoreTake(s_temp_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            s_temp_c = temp;
-            xSemaphoreGive(s_temp_mutex);
-        }
-        ESP_LOGD(TAG, "Temp: %.2f C", temp);
-
-        // Step 4 — rest of 2 s interval
-        vTaskDelay(pdMS_TO_TICKS(1200));
+    err = ds1307_init(i2c_bus, &ds1307_dev);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "DS1307 init failed");
+        return err;
     }
-}
 
-//  Task — clock display (exact 1 s cadence via vTaskDelayUntil)
-static void task_clock(void *arg)
-{
-    bool colon_on = true;
-
-    // Let the splash screen show briefly
-    vTaskDelay(pdMS_TO_TICKS(900));
-
-    TickType_t last_wake = xTaskGetTickCount();
-
-    while (true) {
-        // Read RTC
-        ds1307_time_t t;
-        esp_err_t err = ds1307_read(s_rtc_dev, &t);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "RTC read error: %s", esp_err_to_name(err));
-            display_show_error("RTC error!");
-            vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000));
-            continue;
-        }
-
-        // Snapshot temperature under mutex
-        float temp_snap = -127.0f;
-        if (xSemaphoreTake(s_temp_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            temp_snap = s_temp_c;
-            xSemaphoreGive(s_temp_mutex);
-        }
-
-        // Render Casio-style frame
-        display_update(&t, temp_snap, colon_on);
-        colon_on = !colon_on;
-
-        // Maintain exact 1 s period
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000));
+#if ENABLE_DS18B20
+    if (ds18b20_init() != ESP_OK) {
+        ESP_LOGW(TAG, "DS18B20 not found, temperature disabled");
     }
+#endif
+
+    return ESP_OK;
 }
 
-//  app_main
+// ---------- Зчитування часу ----------
+static bool app_read_time(ds1307_time_t *t)
+{
+    esp_err_t err = ds1307_get_time(ds1307_dev, t);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read DS1307: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+// ---------- Анімація секунд: спінер у правому верхньому куті ----------
+static void draw_seconds_spinner(ssd1306_t *disp, uint8_t sec)
+{
+    const int cx = 120, cy = 6, r = 5;
+    int angle = (sec % 60) * 6; // 360/60
+    float rad = angle * 3.14159f / 180.0f;
+    int x2 = cx + (int)(r * cosf(rad - 1.5708f));
+    int y2 = cy + (int)(r * sinf(rad - 1.5708f));
+    ssd1306_draw_circle(disp, cx, cy, r, true);
+    ssd1306_set_pixel(disp, x2, y2, true);
+    ssd1306_set_pixel(disp, cx, cy, true);
+}
+
+// ---------- Прогрес-бар хвилин знизу екрана ----------
+static void draw_minute_progress(ssd1306_t *disp, uint8_t sec)
+{
+    int width = (sec * 128) / 60;
+    ssd1306_draw_hline(disp, 0, 63, 128, false);
+    ssd1306_fill_rect(disp, 0, 62, width, 2, true);
+}
+
+// ---------- Оновлення дисплея ----------
+static void app_update_display(const ds1307_time_t *t, float temp_c, bool temp_valid)
+{
+    char date_str[24];
+    snprintf(date_str, sizeof(date_str), "%s %02d.%02d.%04d",
+             weekday_names[t->day_of_week], t->date, t->month, t->year);
+
+    ssd1306_clear(&display);
+
+    // Години:Хвилини - жирним (масштаб 3), секунди - звичайним поруч (масштаб 1)
+    char hm_str[8];
+    char s_str[4] __attribute__((unused));
+    char sec_str[4];
+    snprintf(hm_str, sizeof(hm_str), "%02d:%02d", t->hour, t->min);
+    snprintf(sec_str, sizeof(sec_str), "%02d", t->sec);
+
+    ssd1306_draw_string(&display, 2, 10, hm_str, 3);
+    ssd1306_draw_string(&display, 98, 10, s_str, 1); // маленькі секунди текстом
+
+    // Дата звичайним шрифтом
+    ssd1306_draw_string(&display, 2, 40, date_str, 1);
+
+    // Температура (опційно)
+    if (temp_valid) {
+        char temp_str[16];
+        snprintf(temp_str, sizeof(temp_str), "%.1f C", temp_c);
+        ssd1306_draw_string(&display, 2, 52, temp_str, 1);
+    }
+
+    // Анімації
+    draw_seconds_spinner(&display, t->sec);
+    draw_minute_progress(&display, t->sec);
+
+    ssd1306_flush(&display);
+}
+
+// Основний цикл
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Casio Clock / ESP32-S3 / ESP-IDF v5 ===");
+    ESP_LOGI(TAG, "Starting clock application");
 
-    // Mutex for shared temperature float
-    s_temp_mutex = xSemaphoreCreateMutex();
-    configASSERT(s_temp_mutex);
+    if (app_hw_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Hardware init failed, halting");
+        return;
+    }
 
-    // Hardware init — order matters
-    init_i2c();
-    display_init(s_i2c_bus);   // shows splash; bus_handle kept for symmetry
-    init_rtc();
+    ds1307_time_t current_time;
+    float temp_c = 0.0f;
+    bool temp_valid = false;
+    int temp_counter = 0;
 
-    // FreeRTOS tasks
-    xTaskCreate(task_temperature, "temp",  4096, NULL, 5, NULL);
-    xTaskCreate(task_clock,       "clock", 4096, NULL, 5, NULL);
+    while (1) {
+        if (app_read_time(&current_time)) {
+#if ENABLE_DS18B20
+            // Читаємо температуру рідше (раз на ~10 циклів), бо конверсія довга
+            if (temp_counter == 0) {
+                temp_valid = (ds18b20_read_temp(&temp_c) == ESP_OK);
+            }
+            temp_counter = (temp_counter + 1) % 10;
+#endif
+            app_update_display(&current_time, temp_c, temp_valid);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }

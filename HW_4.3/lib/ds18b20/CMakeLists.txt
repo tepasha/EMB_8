@@ -1,9 +1,5 @@
 idf_component_register(
-    SRCS
-        # header-only: no .c sources
-    INCLUDE_DIRS
-        "."
-    REQUIRES
-        driver
-        onewire
+    SRCS "ds18b20.c"
+    INCLUDE_DIRS "."
+    REQUIRES driver esp_driver_gpio freertos
 )
