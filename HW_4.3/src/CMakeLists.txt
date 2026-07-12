@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "display.c"
+    INCLUDE_DIRS
+        "../lib/rtc_ds1307"
+        "../lib/u8g2_hal_esp_idf"
+    REQUIRES
+        "../lib/rtc_ds1307"
+        "../lib/u8g2_hal_esp_idf"
+)

@@ -1,0 +1,23 @@
+## Top-level CMakeLists.txt
+## Place this file at the ROOT of your ESP-IDF project
+## (one level above the main/ directory — Schematik maps src/ → main/).
+##
+## lib/ contains the four custom IDF components:
+##   lib/onewire      — bit-banged 1-Wire primitives
+##   lib/ds18b20      — DS18B20 temperature sensor driver
+##   lib/rtc_ds1307   — DS1307 RTC driver (IDF i2c_master v5.x API)
+##   lib/display      — SSD1306 Casio-style clock face (U8g2)
+##
+## The component manager fetches u8g2_hal_esp_idf at build time via
+## src/idf_component.yml (= main/idf_component.yml in IDF terms).
+
+cmake_minimum_required(VERSION 3.16)
+
+## Tell IDF where to find the custom lib/ components.
+## This must be set BEFORE the project() call.
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+)
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(casio_clock)

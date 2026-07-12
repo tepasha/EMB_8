@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "display.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        driver
+        rtc_ds1307
+        u8g2_hal_esp_idf
+)
