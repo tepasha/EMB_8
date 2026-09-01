@@ -23,7 +23,7 @@ static const char *weekday_names[] = {
 };
 
 // ---------- Ініціалізація периферії ----------
-static esp_err_t app_hw_init(void)
+static esp_err_t app_hw_init()
 {
     esp_err_t err = i2c_bus_init(&i2c_bus);
     if (err != ESP_OK) return err;
@@ -63,9 +63,9 @@ static bool app_read_time(ds1307_time_t *t)
 // ---------- Анімація секунд: спінер у правому верхньому куті ----------
 static void draw_seconds_spinner(ssd1306_t *disp, uint8_t sec)
 {
-    const int cx = 120, cy = 6, r = 5;
+    constexpr int cx = 120, cy = 6, r = 5;
     int angle = (sec % 60) * 6; // 360/60
-    float rad = angle * 3.14159f / 180.0f;
+    const float rad = angle * 3.14159f / 180.0f;
     int x2 = cx + (int)(r * cosf(rad - 1.5708f));
     int y2 = cy + (int)(r * sinf(rad - 1.5708f));
     ssd1306_draw_circle(disp, cx, cy, r, true);
@@ -118,7 +118,7 @@ static void app_update_display(const ds1307_time_t *t, float temp_c, bool temp_v
 }
 
 // Основний цикл
-void app_main(void)
+static void app_main()
 {
     ESP_LOGI(TAG, "Starting clock application");
 
